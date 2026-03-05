@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import sys
+
+# ── Windows: asyncio subprocess support ───────────────────────────────────────
+# SelectorEventLoop (Windows default) does NOT support subprocess creation.
+# Switch to ProactorEventLoop so asyncio.create_subprocess_exec works correctly.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
