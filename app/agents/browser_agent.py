@@ -51,21 +51,12 @@ def _system_prompt(base_url: str | None) -> str:
     return _BASE_SYSTEM.format(base_url=url)
 
 
-def _build_executor(base_url: str | None) -> Agent:
+def _build_executor(base_url: str | None) -> Any:
     llm = ChatGoogleGenerativeAI(
         model=settings.LLM_MODEL,
     )
 
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", _system_prompt(base_url)),
-            MessagesPlaceholder("chat_history", optional=True),
-            ("human", "{input}"),
-            MessagesPlaceholder("agent_scratchpad"),
-        ]
-    )
-
-    agent = create_agent(llm, ALL_TOOLS, prompt)
+    agent = create_agent(model=llm, tools=ALL_TOOLS, system_prompt=_system_prompt(base_url))
     return agent
 
 
@@ -95,34 +86,66 @@ class BrowserAgent:
 
         executor = _build_executor(base_url)
 
+        messages = []
+        if chat_history:
+            messages.extend(chat_history)
+        messages.append(("user", step))
+
         result = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: executor.invoke(
                 {
-                    "input": step,
-                    "chat_history": chat_history or [],
+                    "messages": messages,
                 }
             ),
         )
 
-        for action, tool_output in result.get("intermediate_steps", []):
-            cmd = _extract_command(action)
-            await ws_manager.send_command(run_id, cmd, str(tool_output), 0)
-            await ws_manager.send_log(run_id, "debug", f"  ↳ {cmd}\n{tool_output}")
+        messages_out = result.get("messages", [])
+        output = ""
+        if messages_out:
+            last_msg = messages_out[-1]
+            if hasattr(last_msg, "content"):
+                if getattr(last_msg, "type", "") == "ai" and isinstance(last_msg.content, list) and len(last_msg.content) > 0:
+                    if isinstance(last_msg.content[0], dict) and "text" in last_msg.content[0]:
+                        output = last_msg.content[0]["text"]
+                    else:
+                        output = str(last_msg.content)
+                elif isinstance(last_msg.content, str):
+                    output = last_msg.content
+                else:
+                    output = str(last_msg.content)
 
-        await ws_manager.send_log(run_id, "info", f"✓ {result.get('output', '')}")
-        return result
+        for i, msg in enumerate(messages_out):
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tool_call in msg.tool_calls:
+                    tool_output = ""
+                    for next_msg in messages_out[i+1:]:
+                        if getattr(next_msg, "type", "") == "tool" and getattr(next_msg, "tool_call_id", "") == tool_call.get("id"):
+                            tool_output = next_msg.content
+                            break
+                    cmd = _extract_command(tool_call)
+                    await ws_manager.send_command(run_id, cmd, str(tool_output), 0)
+                    await ws_manager.send_log(run_id, "debug", f"  ↳ {cmd}\n{tool_output}")
+
+        await ws_manager.send_log(run_id, "info", f"✓ {output}")
+        return {"output": output, "messages": messages_out}
 
 
 def _extract_command(action: Any) -> str:
     try:
-        tool_input = action.tool_input
+        if isinstance(action, dict) and "args" in action:
+            tool_input = action["args"]
+        else:
+            tool_input = getattr(action, "tool_input", None)
+
         if isinstance(tool_input, dict):
             args = tool_input.get("args") or tool_input.get("action") or tool_input.get("url", "")
             return f"agent-browser {args}"
-        return f"agent-browser {tool_input}"
+        elif tool_input:
+            return f"agent-browser {tool_input}"
     except Exception:
-        return str(action)
+        pass
+    return str(action)
 
 
 # Singleton — safe to reuse because executors are built per-step

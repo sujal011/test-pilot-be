@@ -58,7 +58,7 @@ def _fmt(result: CLIResult) -> str:
 
 
 def _run(args: str) -> str:
-    return _fmt(asyncio.get_event_loop().run_until_complete(run_cli(args)))
+    return _fmt(asyncio.run(run_cli(args)))
 
 
 # ── tool functions ────────────────────────────────────────────────────────────
