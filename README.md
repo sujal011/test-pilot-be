@@ -266,3 +266,10 @@ featues=res in mind to add next
 
  - regenrate the test cases or test case steps
  - refine the user story clearly
+
+ next :
+
+  - create a websocket stream of live events happening
+  - create a ui/api for seeing all the test runs happened
+  - implement a router in the react router 
+  - add auth in application
