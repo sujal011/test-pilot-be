@@ -65,7 +65,10 @@ async def run_test_case(
     Kick off a test run asynchronously.
     Returns the run ID immediately; connect to WS /ws/testruns/{run_id} for live logs.
     """
+    import logging
     from app.models.test_run import TestRun
+
+    log = logging.getLogger(__name__)
 
     tc_service = TestCaseService(db)
     tc = await tc_service.get_test_case_with_steps(test_case_id)
@@ -74,32 +77,50 @@ async def run_test_case(
 
     run = TestRun(test_case_id=test_case_id, status="pending")
     db.add(run)
+    # flush() assigns the PK but does NOT persist — we must commit so that
+    # the background task's fresh session can actually find this row.
     await db.flush()
     await db.refresh(run)
     run_id = run.id
     run_read = TestRunRead.model_validate(run)
+
+    # Commit NOW so the TestRun row is visible to the background session.
+    await db.commit()
+    log.info("[run=%s] TestRun committed, scheduling background execution.", run_id)
 
     background_tasks.add_task(_execute_in_background, run_id, test_case_id)
     return run_read
 
 
 async def _execute_in_background(run_id: uuid.UUID, test_case_id: uuid.UUID) -> None:
+    import logging
+    from sqlalchemy import select
+    from app.models.test_run import TestRun
+    from app.services.execution_service import ExecutionService
+    from app.utils.ws_manager import ws_manager
+
+    log = logging.getLogger(__name__)
+    log.info("[run=%s] Background execution task started.", run_id)
+
     async with AsyncSessionLocal() as session:
         try:
-            from sqlalchemy import select
-            from app.models.test_run import TestRun
-            from app.services.execution_service import ExecutionService
-
             result = await session.execute(select(TestRun).where(TestRun.id == run_id))
             run = result.scalar_one_or_none()
             if run is None:
+                log.error(
+                    "[run=%s] TestRun not found in background task — "
+                    "did the HTTP handler commit before scheduling?",
+                    run_id,
+                )
                 return
 
+            log.info("[run=%s] Found TestRun, handing off to ExecutionService.", run_id)
             service = ExecutionService(session)
             await service._run_existing(run, test_case_id)
             await session.commit()
+            log.info("[run=%s] Background execution finished and committed.", run_id)
         except Exception as exc:
+            log.exception("[run=%s] Background execution crashed: %s", run_id, exc)
             await session.rollback()
-            from app.utils.ws_manager import ws_manager
             await ws_manager.send_log(str(run_id), "error", f"Run crashed: {exc}")
             await ws_manager.send_status(str(run_id), "error")

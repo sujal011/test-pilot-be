@@ -46,9 +46,3 @@ async def on_startup() -> None:
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
-
-    # INSERT_YOUR_CODE
-# @app.get("/docs", include_in_schema=False)
-# async def custom_docs_redirect():
-#     from fastapi.responses import RedirectResponse
-#     return RedirectResponse(url="/docs/")

@@ -1,6 +1,10 @@
 """
 Orchestrates a full test-case run.
 
+NOTE: WebSocket streaming/logging is intentionally disabled here so we can
+focus on executing the agent-browser CLI and inspecting results via standard
+logs / HTTP instead of live websockets.
+
 Execution order:
   1. Load TestCase → TestSteps + UserStory.base_url
   2. If base_url is set, run  `agent-browser open <base_url>`  FIRST as a
@@ -12,6 +16,7 @@ Execution order:
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
 
@@ -25,6 +30,8 @@ from app.models.test_run import ReplayCommand, TestRun
 from app.services.ai_service import generate_run_summary
 from app.utils.cli_runner import run_cli
 from app.utils.ws_manager import ws_manager
+
+log = logging.getLogger(__name__)
 
 
 class ExecutionService:
@@ -63,14 +70,15 @@ class ExecutionService:
         await self.db.flush()
 
         run_id_str = str(run.id)
-        await ws_manager.send_status(run_id_str, "running")
-        await ws_manager.send_log(
-            run_id_str, "info",
-            f"Starting test run: {test_case.title}  "
+        msg_start = (
+            f"Starting test run: {test_case.title} "
             f"({len(test_case.steps)} steps"
             + (f"  |  base URL: {base_url}" if base_url else "")
             + ")"
         )
+        log.info("[run=%s] %s", run_id_str, msg_start)
+        await ws_manager.send_status(run_id_str, "running")
+        await ws_manager.send_log(run_id_str, "info", msg_start)
 
         step_outputs: list[str] = []
         overall_success = True
@@ -78,10 +86,10 @@ class ExecutionService:
 
         # ── Step 0: guaranteed browser open ──────────────────────────────────
         if base_url:
-            await ws_manager.send_log(
-                run_id_str, "info",
-                f"[step 0] Opening base URL: {base_url}"
-            )
+            msg0 = f"[step 0] Opening base URL: {base_url}"
+            log.info("[run=%s] %s", run_id_str, msg0)
+            await ws_manager.send_log(run_id_str, "info", msg0)
+
             open_result = await run_cli(f"open {base_url}")
             rc0 = ReplayCommand(
                 test_run_id=run.id,
@@ -92,6 +100,12 @@ class ExecutionService:
             )
             self.db.add(rc0)
             step_outputs.append(f"$ {open_result.command}\n{open_result.combined_output}")
+            log.info(
+                "[run=%s] CLI: %s\n%s",
+                run_id_str,
+                open_result.command,
+                open_result.combined_output,
+            )
             await ws_manager.send_command(
                 run_id_str,
                 open_result.command,
@@ -101,11 +115,12 @@ class ExecutionService:
 
             if not open_result.success:
                 overall_success = False
-                await ws_manager.send_log(
-                    run_id_str, "error",
+                err_msg = (
                     f"Failed to open base URL (exit {open_result.exit_code}): "
                     f"{open_result.stderr}"
                 )
+                log.error("[run=%s] %s", run_id_str, err_msg)
+                await ws_manager.send_log(run_id_str, "error", err_msg)
                 # Don't proceed if we can't even open the page
                 await self.db.flush()
                 run.status = "failed"
@@ -113,14 +128,20 @@ class ExecutionService:
                 await self.db.flush()
                 await self.db.refresh(run)
                 await ws_manager.send_status(run_id_str, "failed")
+                log.info(
+                    "[run=%s] Marking run as failed (could not open base URL).",
+                    run_id_str,
+                )
                 return run
 
         # ── Steps 1-N: AI agent executes each natural-language step ──────────
         for step in sorted(test_case.steps, key=lambda s: s.step_order):
-            await ws_manager.send_log(
-                run_id_str, "info",
-                f"[{step.step_order}/{len(test_case.steps)}] {step.natural_language_step}"
+            msg_step = (
+                f"[{step.step_order}/{len(test_case.steps)}] "
+                f"{step.natural_language_step}"
             )
+            log.info("[run=%s] %s", run_id_str, msg_step)
+            await ws_manager.send_log(run_id_str, "info", msg_step)
 
             try:
                 agent_result = await browser_agent.execute_step(
@@ -141,6 +162,10 @@ class ExecutionService:
                     )
                     self.db.add(rc)
                     step_outputs.append(f"$ {cmd_str}\n{tool_output}")
+                    log.info("[run=%s] CLI: %s\n%s", run_id_str, cmd_str, tool_output)
+                    await ws_manager.send_command(
+                        run_id_str, cmd_str, str(tool_output), 0
+                    )
 
                 from langchain_core.messages import AIMessage, HumanMessage
                 chat_history.append(HumanMessage(content=step.natural_language_step))
@@ -149,6 +174,7 @@ class ExecutionService:
             except Exception as exc:
                 overall_success = False
                 error_msg = str(exc)
+                log.error("[run=%s] Step failed: %s", run_id_str, error_msg)
                 await ws_manager.send_log(run_id_str, "error", f"Step failed: {error_msg}")
 
                 rc = ReplayCommand(
@@ -181,6 +207,9 @@ class ExecutionService:
 
         await ws_manager.send_summary(run_id_str, summary)
         await ws_manager.send_status(run_id_str, run.status)
+
+        log.info("[run=%s] Completed with status=%s", run_id_str, run.status)
+        log.debug("[run=%s] Summary: %s", run_id_str, summary)
 
         return run
 

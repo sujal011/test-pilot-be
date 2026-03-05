@@ -11,5 +11,6 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = os.getenv("LOG_LEVEL") or "INFO"
     
     AGENT_BROWSER_STREAM_PORT: int = os.getenv("AGENT_BROWSER_STREAM_PORT") or 9223
+    AGENT_BROWSER_CMD: str = os.getenv("AGENT_BROWSER_CMD") or "agent-browser"
 
 settings = Settings()
