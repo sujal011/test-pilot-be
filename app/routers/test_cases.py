@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import List
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
@@ -10,6 +11,19 @@ from app.schemas import TestCaseRead, TestRunRead, TestStepRead, TestStepUpdate
 from app.services.test_case_service import TestCaseService
 
 router = APIRouter(tags=["test-cases"])
+
+
+@router.get(
+    "/user-stories/{user_story_id}/test-cases",
+    response_model=List[TestCaseRead],
+)
+async def list_test_cases(
+    user_story_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> List[TestCaseRead]:
+    service = TestCaseService(db)
+    test_cases = await service.list_test_cases(user_story_id)
+    return [TestCaseRead.model_validate(tc) for tc in test_cases]
 
 
 @router.get("/testcases/{test_case_id}", response_model=TestCaseRead)

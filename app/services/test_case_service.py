@@ -14,6 +14,18 @@ class TestCaseService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
+    async def list_test_cases(self, user_story_id: uuid.UUID) -> list[TestCase]:
+        """
+        Return all test cases for a user story, eagerly loading steps
+        so Pydantic can serialise without triggering lazy I/O.
+        """
+        result = await self.db.execute(
+            select(TestCase)
+            .options(selectinload(TestCase.steps))
+            .where(TestCase.user_story_id == user_story_id)
+        )
+        return result.scalars().unique().all()
+
     async def create_from_generated(
         self,
         project_id: uuid.UUID,

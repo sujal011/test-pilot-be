@@ -7,11 +7,44 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 
 from app.config import settings
 from app.schemas import GeneratedTestCase
+
+
+def _extract_text_from_response(message: Any) -> str:
+    """
+    Normalise LangChain message `content` into a plain string.
+    Handles both string and list-based content (e.g. Gemini responses).
+    """
+    content = getattr(message, "content", "")
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            text: str | None = None
+
+            if hasattr(part, "text"):
+                text = getattr(part, "text")  # type: ignore[attr-defined]
+            elif isinstance(part, dict):
+                text = part.get("text") or part.get("content")
+
+            if text is None:
+                text = str(part)
+
+            parts.append(text)
+
+        return "".join(parts)
+
+    return str(content)
+
 
 # ── Test-case generation ──────────────────────────────────────────────────────
 
@@ -35,9 +68,9 @@ Rules:
 
 Example steps:
   "Open {base_url}/login"
+  "Click the Login button"
   "Enter email test@example.com into the email field"
   "Enter password 123456 into the password field"
-  "Click the Login button"
   "Verify that the dashboard heading is visible"
 
 Return a JSON array of test case objects. Each object must have:
@@ -66,7 +99,7 @@ async def generate_test_cases(
     )
 
     response = await llm.ainvoke(prompt)
-    raw = response.content.strip()
+    raw = _extract_text_from_response(response).strip()
 
     # Strip markdown fences if the model added them
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
@@ -99,10 +132,8 @@ async def generate_run_summary(
     steps_output: str,
     base_url: str | None = None,
 ) -> str:
-    llm = ChatOpenAI(
+    llm = ChatGoogleGenerativeAI(
         model=settings.LLM_MODEL,
-        openai_api_key=settings.OPENAI_API_KEY,
-        temperature=0,
     )
 
     prompt = SUMMARY_PROMPT.format(
@@ -111,4 +142,4 @@ async def generate_run_summary(
         steps_output=steps_output,
     )
     response = await llm.ainvoke(prompt)
-    return response.content.strip()
+    return _extract_text_from_response(response).strip()

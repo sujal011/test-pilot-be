@@ -260,3 +260,9 @@ app/
 - Add a **browser pool** (multiple agent-browser sessions)
 - Add **auth** (JWT / OAuth2)
 - Containerise the FastAPI app alongside the DB
+
+
+featues=res in mind to add next 
+
+ - regenrate the test cases or test case steps
+ - refine the user story clearly

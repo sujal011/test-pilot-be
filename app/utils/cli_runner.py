@@ -69,7 +69,7 @@ async def run_cli(args: str) -> CLIResult:
         return CLIResult(
             command=full_cmd,
             stdout="",
-            stderr="agent-browser binary not found. Install it with: npm install -g @agentdeskai/browser-tools",
+            stderr="agent-browser binary not found. Install it with: npm install -g agent-browser",
             exit_code=127,
         )
 
